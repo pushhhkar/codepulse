@@ -1,0 +1,34 @@
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+dist/
+.next/
+.turbo/
+
+# ── TypeScript ────────────────────────────────────────────────────────────────
+*.tsbuildinfo
+packages/types/dist/
+
+# ── Environment variables (never commit secrets) ───────────────────────────────
+.env
+.env.local
+.env.*.local
+# Allow example files
+!.env.example
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+.idea/
+
+# ── Testing (placeholder for Phase 3) ────────────────────────────────────────
+coverage/

@@ -1,0 +1,21 @@
+{
+  "name": "@codepulse/types",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsc --project tsconfig.json --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@codepulse/config": "*",
+    "typescript": "^5.7.2"
+  }
+}
