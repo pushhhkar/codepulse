@@ -9,6 +9,7 @@ import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.routes.js';
 import sandboxRoutes from './routes/sandbox.routes.js';
 import aiRoutes from './routes/ai.routes.js';
+import workspacesRoutes from './routes/workspaces.routes.js';
 
 const app = express();
 
@@ -32,6 +33,7 @@ app.get('/health', (_req, res) => {
 app.use('/auth', authRoutes);
 app.use('/api/sandbox', sandboxRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/workspaces', workspacesRoutes);
 
 // ── HTTP server (Socket.io must own the server instance, not Express) ─────────
 const httpServer = createServer(app);

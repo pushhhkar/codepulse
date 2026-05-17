@@ -11,9 +11,11 @@ const workspaceSchema = new Schema<WorkspaceDocument>(
     ownerId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true, trim: true, maxlength: 120 },
     isPublic: { type: Boolean, required: true, default: false },
+    code: { type: String, default: '' },
+    language: { type: String, required: true, default: 'javascript' },
   },
   {
-    timestamps: { createdAt: true, updatedAt: false },
+    timestamps: true,
     toJSON: {
       virtuals: true,
       transform(_doc, ret: Record<string, unknown>) {

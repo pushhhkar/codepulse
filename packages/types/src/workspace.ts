@@ -3,5 +3,7 @@ export interface Workspace {
   ownerId: string;
   title: string;
   isPublic: boolean;
+  code: string;
+  language: string;
   createdAt: Date;
 }

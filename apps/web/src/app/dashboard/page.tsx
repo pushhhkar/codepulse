@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import Image from 'next/image';
 import { getServerUser } from '@/lib/auth';
+import NewWorkspaceButton from '@/components/new-workspace-button';
 
 export const metadata: Metadata = {
   title: 'Dashboard',
@@ -62,12 +63,7 @@ export default async function DashboardPage() {
         <section className="mt-10">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-white">Your Workspaces</h2>
-            <button
-              disabled
-              className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white opacity-50 cursor-not-allowed"
-            >
-              + New Workspace
-            </button>
+            <NewWorkspaceButton />
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
