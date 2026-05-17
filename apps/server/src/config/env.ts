@@ -19,4 +19,10 @@ export const env = {
   },
   jwtSecret: requireEnv('JWT_SECRET'),
   clientUrl: requireEnv('CLIENT_URL'),
+  geminiApiKey: requireEnv('GEMINI_API_KEY'),
+  sandbox: {
+    image: process.env['SANDBOX_IMAGE'] ?? 'codepulse-sandbox:latest',
+    timeoutMs: parseInt(process.env['SANDBOX_TIMEOUT_MS'] ?? '10000', 10),
+    maxCodeBytes: parseInt(process.env['SANDBOX_MAX_CODE_BYTES'] ?? '65536', 10),
+  },
 } as const;

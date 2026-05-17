@@ -21,3 +21,25 @@
     @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-surface-900;
   }
 }
+
+/*
+ * Ghost cursor base styles — colour and label are injected per-user via
+ * <style> tags by CollaborativeEditor (injectUserCursorStyle). The rules
+ * here provide layout scaffolding that applies to every remote cursor.
+ */
+.ghost-cursor {
+  position: relative;
+}
+
+.ghost-cursor::after {
+  position: absolute;
+  top: -1.25rem;
+  left: 0;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 100;
+}

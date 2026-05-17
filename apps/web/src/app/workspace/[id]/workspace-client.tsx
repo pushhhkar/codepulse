@@ -6,15 +6,15 @@ import CollaborativeEditor from '@/components/collaborative-editor';
 
 interface WorkspaceClientProps {
   workspaceId: string;
+  userId: string;
+  userName: string;
 }
 
-export default function WorkspaceClient({ workspaceId }: WorkspaceClientProps) {
+export default function WorkspaceClient({ workspaceId, userId, userName }: WorkspaceClientProps) {
   const { socket, status } = useSocket();
 
-  // Emit JOIN_WORKSPACE once the socket is connected and we have the id.
   useEffect(() => {
     if (!socket || status !== 'connected') return;
-
     socket.emit('JOIN_WORKSPACE', { workspaceId });
   }, [socket, status, workspaceId]);
 
@@ -34,9 +34,13 @@ export default function WorkspaceClient({ workspaceId }: WorkspaceClientProps) {
         <span className="text-xs capitalize text-slate-400">{status}</span>
       </div>
 
-      {/* Editor fills the remaining height */}
       <div className="flex-1">
-        <CollaborativeEditor workspaceId={workspaceId} />
+        <CollaborativeEditor
+          workspaceId={workspaceId}
+          socket={socket}
+          userId={userId}
+          userName={userName}
+        />
       </div>
     </div>
   );

@@ -30,5 +30,8 @@ Thumbs.db
 .vscode/settings.json
 .idea/
 
+# ── Claude ────────────────────────────────────────────────────────────────────
+CLAUDE.md
+
 # ── Testing (placeholder for Phase 3) ────────────────────────────────────────
 coverage/

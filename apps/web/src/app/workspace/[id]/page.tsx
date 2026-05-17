@@ -62,7 +62,7 @@ export default async function WorkspacePage({ params }: WorkspacePageProps) {
 
       {/* Workspace body — fills remaining height */}
       <main className="min-h-0 flex-1">
-        <WorkspaceClient workspaceId={id} />
+        <WorkspaceClient workspaceId={id} userId={user.id} userName={user.name} />
       </main>
     </div>
   );

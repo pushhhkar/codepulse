@@ -7,6 +7,8 @@ import type { ClientToServerEvents, ServerToClientEvents, SocketData } from '@co
 import { env } from './config/env.js';
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.routes.js';
+import sandboxRoutes from './routes/sandbox.routes.js';
+import aiRoutes from './routes/ai.routes.js';
 
 const app = express();
 
@@ -28,6 +30,8 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/auth', authRoutes);
+app.use('/api/sandbox', sandboxRoutes);
+app.use('/api/ai', aiRoutes);
 
 // ── HTTP server (Socket.io must own the server instance, not Express) ─────────
 const httpServer = createServer(app);
@@ -51,11 +55,16 @@ io.on('connection', (socket) => {
     socket.data.workspaceId = workspaceId;
     console.log(`[socket] id=${socket.id} joined workspace=${workspaceId}`);
 
-    // Notify everyone else already in the room that a new user arrived
-    socket.to(workspaceId).emit('USER_JOINED', {
-      userId: socket.id,
-      workspaceId,
-    });
+    socket.to(workspaceId).emit('USER_JOINED', { userId: socket.id, workspaceId });
+  });
+
+  socket.on('CODE_CHANGE', ({ workspaceId, content }) => {
+    // Relay to everyone in the room except the sender
+    socket.to(workspaceId).emit('CODE_CHANGE', { content });
+  });
+
+  socket.on('CURSOR_MOVE', ({ workspaceId, cursor, userId, userName }) => {
+    socket.to(workspaceId).emit('CURSOR_MOVE', { cursor, userId, userName });
   });
 
   socket.on('disconnect', (reason) => {

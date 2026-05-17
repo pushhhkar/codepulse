@@ -74,9 +74,22 @@ cd apps/web        && npx tsc --noEmit
 cd packages/types  && npx tsc --project tsconfig.json
 ```
 
+## Sandbox execution architecture
+
+- Docker image tag: `codepulse-sandbox:latest` (built from `docker/sandbox/Dockerfile`).
+- Build command: `docker build -t codepulse-sandbox:latest ./docker/sandbox`
+- All execution goes through `apps/server/src/services/sandbox.ts` → `executeCode()`.
+- The route is `POST /api/sandbox/execute`, protected by `requireAuth`.
+- Security flags enforced per-container: `--network none`, `--memory 128m`, `--cpus 0.5`, `--pids-limit 64`, `--read-only`, `--tmpfs /tmp`, `--user nobody`.
+- `execFile` is used (not `exec`) — no shell involved, no injection surface in argv.
+- Temp files live in `os.tmpdir()` with a UUID prefix, deleted in a `finally` block.
+- Timeout (`SANDBOX_TIMEOUT_MS`, default 10 s) is enforced via `Promise.race`; timed-out containers are killed by name.
+
 ## Phase roadmap
 
 - **Phase 1** (done): Monorepo scaffold, auth, shared types, Mongoose schemas.
 - **Phase 2A** (done): Socket.io infrastructure, Monaco Editor rendering, `JOIN_WORKSPACE` event.
-- **Phase 2B** (next): Real-time code syncing — operational transform or CRDT, `CONTENT_UPDATE` socket event, persisting snapshots to MongoDB.
-- **Phase 3**: Inline comments, presence cursors, workspace management UI.
+- **Phase 2B** (done): Real-time code syncing (`CODE_CHANGE`), ghost cursors (`CURSOR_MOVE`).
+- **Phase 3A** (done): Docker sandbox execution — `POST /api/sandbox/execute` for JS and C++.
+- **Phase 3B** (next): Frontend execution UI — run button, output panel, language selector in the workspace.
+- **Phase 4**: Inline comments, workspace management UI, persistence of snapshots to MongoDB.
