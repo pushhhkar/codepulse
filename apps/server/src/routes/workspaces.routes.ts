@@ -9,10 +9,14 @@ router.use(requireAuth);
 
 // POST / — create a new workspace
 router.post('/', async (req: Request, res: Response): Promise<void> => {
+  const body = req.body as Record<string, unknown>;
+  const rawTitle = typeof body['title'] === 'string' ? body['title'].trim() : '';
+  const title = rawTitle.length > 0 ? rawTitle : 'Untitled Workspace';
+
   try {
     const workspace = await WorkspaceModel.create({
       ownerId: req.user!.id,
-      title: 'Untitled Workspace',
+      title,
       language: 'javascript',
       code: '',
       isPublic: false,
@@ -118,6 +122,33 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   } catch (err) {
     console.error('[workspaces] Failed to update workspace:', err);
     res.status(500).json({ error: 'Failed to update workspace.' });
+  }
+});
+
+// DELETE /:id — delete a workspace (owner only)
+router.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params as { id: string };
+
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(404).json({ error: 'Workspace not found.' });
+    return;
+  }
+
+  try {
+    const deleted = await WorkspaceModel.findOneAndDelete({
+      _id: id,
+      ownerId: req.user!.id,
+    }).lean();
+
+    if (!deleted) {
+      res.status(404).json({ error: 'Workspace not found.' });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[workspaces] Failed to delete workspace:', err);
+    res.status(500).json({ error: 'Failed to delete workspace.' });
   }
 });
 

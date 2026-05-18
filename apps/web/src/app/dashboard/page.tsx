@@ -5,6 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { getServerUser } from '@/lib/auth';
 import NewWorkspaceButton from '@/components/new-workspace-button';
+import DeleteWorkspaceButton from '@/components/delete-workspace-button';
 import type { Workspace } from '@codepulse/types';
 
 export const metadata: Metadata = {
@@ -123,37 +124,51 @@ export default async function DashboardPage() {
           ) : (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
               {workspaces.map((ws) => (
-                <Link
+                <div
                   key={ws.id}
-                  href={`/workspace/${ws.id}`}
-                  className="group flex flex-col rounded-xl border border-surface-600 bg-surface-800 transition-all duration-200 hover:border-brand-500/50 hover:shadow-[0_0_24px_rgba(99,102,241,0.15)]"
+                  className="group relative flex flex-col rounded-xl border border-surface-600 bg-surface-800 transition-all duration-200 hover:border-brand-500/50 hover:shadow-[0_0_24px_rgba(99,102,241,0.15)]"
                 >
-                  {/* Card header */}
-                  <div className="flex items-start justify-between gap-3 px-4 pt-4">
-                    <h3 className="truncate font-medium text-white group-hover:text-brand-300 transition-colors duration-200">
-                      {ws.title}
-                    </h3>
-                    <span
-                      className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-xs ${languageBadgeClass(ws.language)}`}
-                    >
-                      {ws.language}
-                    </span>
+                  {/* Clickable overlay — stretches across the whole card */}
+                  <Link
+                    href={`/workspace/${ws.id}`}
+                    aria-label={`Open workspace ${ws.title}`}
+                    className="absolute inset-0 z-0 rounded-xl"
+                  />
+
+                  {/* Delete button — sits above the link overlay */}
+                  <div className="absolute right-3 top-3 z-10">
+                    <DeleteWorkspaceButton workspaceId={ws.id} />
                   </div>
 
-                  {/* Code preview */}
-                  <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-surface-700 bg-[#0d1117]">
-                    <pre className="line-clamp-3 px-3 py-2.5 font-mono text-xs leading-relaxed text-slate-400 [overflow-wrap:anywhere]">
-                      {(ws.code ?? '').trim() || <span className="italic text-slate-600">Empty workspace</span>}
-                    </pre>
-                  </div>
+                  {/* Card content — does not block the link click */}
+                  <div className="pointer-events-none relative z-[1] flex flex-col">
+                    {/* Card header — pr-12 clears the absolute delete button */}
+                    <div className="flex items-start justify-between gap-3 px-4 pr-12 pt-4">
+                      <h3 className="truncate font-medium text-white transition-colors duration-200 group-hover:text-brand-300">
+                        {ws.title}
+                      </h3>
+                      <span
+                        className={`shrink-0 rounded-md border px-2 py-0.5 font-mono text-xs ${languageBadgeClass(ws.language)}`}
+                      >
+                        {ws.language}
+                      </span>
+                    </div>
 
-                  {/* Timestamp */}
-                  <div className="px-4 pb-4 pt-3">
-                    <span className="text-xs text-slate-500">
-                      {formatRelativeTime(new Date(ws.updatedAt))}
-                    </span>
+                    {/* Code preview */}
+                    <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-surface-700 bg-[#0d1117]">
+                      <pre className="line-clamp-3 px-3 py-2.5 font-mono text-xs leading-relaxed text-slate-400 [overflow-wrap:anywhere]">
+                        {(ws.code ?? '').trim() || <span className="italic text-slate-600">Empty workspace</span>}
+                      </pre>
+                    </div>
+
+                    {/* Timestamp */}
+                    <div className="px-4 pb-4 pt-3">
+                      <span className="text-xs text-slate-500">
+                        {formatRelativeTime(new Date(ws.updatedAt))}
+                      </span>
+                    </div>
                   </div>
-                </Link>
+                </div>
               ))}
             </div>
           )}
