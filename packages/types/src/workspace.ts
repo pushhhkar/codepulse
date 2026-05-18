@@ -6,4 +6,5 @@ export interface Workspace {
   code: string;
   language: string;
   createdAt: Date;
+  updatedAt: Date;
 }

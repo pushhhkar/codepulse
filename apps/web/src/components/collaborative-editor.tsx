@@ -1,12 +1,13 @@
 'use client';
 
 import Editor, { type OnMount } from '@monaco-editor/react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
-import type { ClientToServerEvents, ServerToClientEvents } from '@codepulse/types';
+import type { ClientToServerEvents, ServerToClientEvents, Workspace } from '@codepulse/types';
 import type { Socket } from 'socket.io-client';
 
-const DEFAULT_VALUE = `console.log('Hello CodePulse');`;
+const API_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:5000';
+const AUTOSAVE_DELAY_MS = 1000;
 
 const CURSOR_COLOURS = [
   '#f59e0b', '#3b82f6', '#10b981', '#ec4899', '#8b5cf6', '#06b6d4',
@@ -61,10 +62,19 @@ interface RemoteCursor {
 }
 
 type AppSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
+interface WorkspaceData {
+  code: string;
+  language: string;
+}
+
+interface WorkspaceApiResponse {
+  workspace: Workspace;
+}
 
 export interface CollaborativeEditorProps {
   workspaceId: string;
-  language?: string;
   socket: AppSocket | null;
   userId: string;
   userName: string;
@@ -72,25 +82,85 @@ export interface CollaborativeEditorProps {
 
 export default function CollaborativeEditor({
   workspaceId,
-  language = 'javascript',
   socket,
   userId,
   userName,
 }: CollaborativeEditorProps) {
-  // State so changes trigger the socket-listener effect below.
   const [editor, setEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const [monaco, setMonaco] = useState<typeof Monaco | null>(null);
+
+  // Hydration state
+  const [workspaceData, setWorkspaceData] = useState<WorkspaceData | null>(null);
+  const [isHydrating, setIsHydrating] = useState(true);
+  const [hydrationError, setHydrationError] = useState(false);
+
+  // Save status
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Guards against: local change → emit → receive → onChange → emit…
   const isRemoteUpdate = useRef(false);
 
-  // Decoration collection for ghost cursors (replaces deprecated deltaDecorations).
+  // Decoration collection for ghost cursors
   const decorationsRef = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
-
-  // Latest known remote cursor positions, keyed by userId.
   const remoteCursorsRef = useRef<Map<string, RemoteCursor>>(new Map());
 
-  // ── Redraw all ghost-cursor decorations ───────────────────────────────────
+  // ── Hydrate on mount ───────────────────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrate(): Promise<void> {
+      try {
+        const res = await fetch(`${API_URL}/api/workspaces/${workspaceId}`, {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+
+        if (!res.ok) {
+          if (!cancelled) setHydrationError(true);
+          return;
+        }
+
+        const { workspace } = (await res.json()) as WorkspaceApiResponse;
+        if (!cancelled) {
+          setWorkspaceData({ code: workspace.code, language: workspace.language });
+        }
+      } catch {
+        if (!cancelled) setHydrationError(true);
+      } finally {
+        if (!cancelled) setIsHydrating(false);
+      }
+    }
+
+    void hydrate();
+    return () => { cancelled = true; };
+  }, [workspaceId]);
+
+  // ── Auto-save (debounced) ──────────────────────────────────────────────────
+  const scheduleAutoSave = useCallback((code: string): void => {
+    if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
+
+    setSaveStatus('saving');
+
+    saveTimerRef.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`${API_URL}/api/workspaces/${workspaceId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ code }),
+          });
+
+          setSaveStatus(res.ok ? 'saved' : 'error');
+        } catch {
+          setSaveStatus('error');
+        }
+      })();
+    }, AUTOSAVE_DELAY_MS);
+  }, [workspaceId]);
+
+  // ── Redraw ghost-cursor decorations ───────────────────────────────────────
   function applyDecorations(
     ed: Monaco.editor.IStandaloneCodeEditor,
     mc: typeof Monaco,
@@ -117,11 +187,10 @@ export default function CollaborativeEditor({
     }
   }
 
-  // ── Socket listeners — re-registered when socket or editor change ─────────
+  // ── Socket listeners ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket || !editor || !monaco) return;
 
-    // Capture as non-nullable consts so TypeScript narrows them inside closures.
     const ed = editor;
     const mc = monaco;
 
@@ -133,13 +202,8 @@ export default function CollaborativeEditor({
       const savedSelections = ed.getSelections();
 
       isRemoteUpdate.current = true;
-
-      // applyEdits keeps undo history intact and does not reset the viewport,
-      // unlike setValue() which scrolls to top and resets cursor.
       model.applyEdits([{ range: model.getFullModelRange(), text: content }]);
 
-      // queueMicrotask runs after the model-change event propagates but before
-      // the next paint — tighter than setTimeout(0), sufficient to clear the flag.
       queueMicrotask(() => {
         if (savedPosition) ed.setPosition(savedPosition);
         if (savedSelections) ed.setSelections(savedSelections);
@@ -183,7 +247,9 @@ export default function CollaborativeEditor({
 
     ed.onDidChangeModelContent(() => {
       if (isRemoteUpdate.current) return;
-      socket?.emit('CODE_CHANGE', { workspaceId, content: ed.getValue() });
+      const content = ed.getValue();
+      socket?.emit('CODE_CHANGE', { workspaceId, content });
+      scheduleAutoSave(content);
     });
 
     ed.onDidChangeCursorPosition((e) => {
@@ -197,26 +263,96 @@ export default function CollaborativeEditor({
     });
   };
 
+  // ── Loading / error states ─────────────────────────────────────────────────
+  if (isHydrating) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-xl border border-surface-600 bg-surface-800">
+        <div className="flex flex-col items-center gap-3">
+          <svg
+            className="h-8 w-8 animate-spin text-brand-400"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span className="animate-pulse text-sm text-slate-400">Loading workspace…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (hydrationError || !workspaceData) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-xl border border-red-500/30 bg-surface-800">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <span className="text-sm font-medium text-red-400">Failed to load workspace</span>
+          <span className="text-xs text-slate-500">Check your connection and refresh the page.</span>
+        </div>
+      </div>
+    );
+  }
+
+  const { code: initialCode, language } = workspaceData;
+
+  // ── Save status chip ───────────────────────────────────────────────────────
+  const saveChip = {
+    saving: (
+      <span className="flex items-center gap-1.5 rounded-md border border-slate-600/40 bg-slate-700/20 px-2 py-1 text-xs text-slate-400">
+        <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+        </svg>
+        Saving…
+      </span>
+    ),
+    saved: (
+      <span className="flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-400">
+        <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+        Saved
+      </span>
+    ),
+    error: (
+      <span className="flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-xs text-red-400">
+        <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M18 6L6 18M6 6l12 12" />
+        </svg>
+        Save failed
+      </span>
+    ),
+    idle: null,
+  }[saveStatus];
+
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl border border-surface-600 bg-surface-800">
       {/* Toolbar */}
       <div className="flex items-center justify-between border-b border-surface-600 px-4 py-2">
+        {/* macOS traffic lights */}
         <div className="flex items-center gap-2">
           <span className="h-3 w-3 rounded-full bg-red-500" />
           <span className="h-3 w-3 rounded-full bg-yellow-400" />
           <span className="h-3 w-3 rounded-full bg-green-500" />
         </div>
+
+        {/* Workspace label */}
         <span className="font-mono text-xs text-slate-500">
           workspace:{workspaceId} &middot; {language}
         </span>
-        <span className="w-16" />
+
+        {/* Save status chip */}
+        <div className="flex w-28 items-center justify-end">
+          {saveChip}
+        </div>
       </div>
 
       <div className="flex-1">
         <Editor
           height="100%"
-          defaultLanguage={language}
-          defaultValue={DEFAULT_VALUE}
+          language={language}
+          defaultValue={initialCode}
           theme="vs-dark"
           onMount={handleMount}
           options={{
