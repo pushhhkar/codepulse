@@ -9,11 +9,21 @@ export interface ReviewRequest {
   code: string;
 }
 
-export interface RawComment {
-  lineNumber: number;
-  severity: ReviewSeverity;
+/**
+ * Numeric severity matching Monaco's MarkerSeverity enum:
+ * 1 = Hint, 2 = Info, 4 = Warning, 8 = Error.
+ */
+export type MarkerSeverity = 1 | 2 | 4 | 8;
+
+export interface AiReviewComment {
+  line: number;
   message: string;
-  suggestion: string;
+  severity: MarkerSeverity;
+}
+
+export interface AiReviewResult {
+  detectedLanguage: string;
+  comments: AiReviewComment[];
 }
 
 // ── Gemini client (singleton) ─────────────────────────────────────────────────
@@ -25,13 +35,16 @@ const model = genAI.getGenerativeModel({
   systemInstruction:
     'You are a Staff Software Engineer reviewing code. ' +
     'Ignore basic syntax. Focus on Time/Space complexity (Big O) and algorithmic inefficiencies. ' +
-    'Return ONLY a raw JSON array of objects. ' +
+    'Detect the programming language of the submitted code and report it using a Monaco-compatible ' +
+    'identifier string (e.g. "javascript", "typescript", "python", "cpp"). ' +
+    'Return ONLY a single raw JSON object — no markdown, no code fences, no prose. ' +
     'The JSON schema must strictly be: ' +
-    '[{ "lineNumber": number, "severity": "info" | "warning" | "error", "message": "string", "suggestion": "string" }]. ' +
-    'If the code has no issues return an empty array []. ' +
-    'No markdown, no code fences, no prose — pure JSON only.',
+    '{ "detectedLanguage": "string", "comments": [ ' +
+    '{ "line": number, "message": "string", "severity": number } ] }. ' +
+    'The "severity" field MUST be one of these integers: ' +
+    '1 (Hint), 2 (Info), 4 (Warning), 8 (Error). ' +
+    'If the code has no issues, return an empty "comments" array.',
   generationConfig: {
-    // Forces the model to return valid JSON, equivalent to OpenAI's json_object mode.
     responseMimeType: 'application/json',
     temperature: 0.2,
   },
@@ -39,74 +52,100 @@ const model = genAI.getGenerativeModel({
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
-const VALID_SEVERITIES = new Set<ReviewSeverity>(['info', 'warning', 'error']);
+const VALID_SEVERITIES = new Set<MarkerSeverity>([1, 2, 4, 8]);
 
-function isValidSeverity(value: unknown): value is ReviewSeverity {
-  return typeof value === 'string' && VALID_SEVERITIES.has(value as ReviewSeverity);
+function isMarkerSeverity(value: unknown): value is MarkerSeverity {
+  return typeof value === 'number' && VALID_SEVERITIES.has(value as MarkerSeverity);
 }
 
-function parseAndValidateComments(raw: string): RawComment[] {
+/**
+ * Gemini occasionally wraps JSON in ```json … ``` fences despite the
+ * responseMimeType hint. Strip any leading/trailing markdown fence so
+ * JSON.parse never chokes on the wrapper.
+ */
+function stripMarkdownFence(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('```')) return trimmed;
+
+  return trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+}
+
+function parseAndValidate(raw: string): AiReviewResult {
   let parsed: unknown;
 
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripMarkdownFence(raw));
   } catch {
     throw new Error(`AI returned non-JSON response: ${raw.slice(0, 200)}`);
   }
 
-  // Gemini with responseMimeType json sometimes wraps the array in an object
-  // e.g. {"reviews": [...]}. Unwrap the first array value we find.
-  if (!Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
-    const firstArray = Object.values(parsed as Record<string, unknown>).find(Array.isArray);
-    if (firstArray !== undefined) {
-      parsed = firstArray;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('AI response was not a JSON object');
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const detected = obj['detectedLanguage'];
+  const rawComments = obj['comments'];
+
+  const detectedLanguage =
+    typeof detected === 'string' && detected.trim().length > 0
+      ? detected.trim().toLowerCase()
+      : 'plaintext';
+
+  const comments: AiReviewComment[] = [];
+
+  if (Array.isArray(rawComments)) {
+    for (const item of rawComments) {
+      if (typeof item !== 'object' || item === null) continue;
+
+      const c = item as Record<string, unknown>;
+      const line = c['line'];
+      const message = c['message'];
+      const severity = c['severity'];
+
+      // Silently skip malformed entries rather than rejecting the whole batch.
+      if (
+        typeof line !== 'number' ||
+        !Number.isInteger(line) ||
+        line < 1 ||
+        typeof message !== 'string' ||
+        message.trim().length === 0 ||
+        !isMarkerSeverity(severity)
+      ) {
+        continue;
+      }
+
+      comments.push({ line, message: message.trim(), severity });
     }
   }
 
-  if (!Array.isArray(parsed)) {
-    throw new Error('AI response was not a JSON array');
+  return { detectedLanguage, comments };
+}
+
+// ── Severity mapping for DB persistence ───────────────────────────────────────
+
+/**
+ * The ReviewComment Mongoose schema stores severity as a string enum.
+ * Map the numeric Monaco severity back to that enum for persistence.
+ */
+export function markerSeverityToReviewSeverity(severity: MarkerSeverity): ReviewSeverity {
+  switch (severity) {
+    case 8:
+      return 'error';
+    case 4:
+      return 'warning';
+    default:
+      return 'info';
   }
-
-  const validated: RawComment[] = [];
-
-  for (const item of parsed) {
-    if (typeof item !== 'object' || item === null) continue;
-
-    const obj = item as Record<string, unknown>;
-    const lineNumber = obj['lineNumber'];
-    const severity = obj['severity'];
-    const message = obj['message'];
-    const suggestion = obj['suggestion'];
-
-    // Silently skip malformed entries rather than rejecting the whole batch.
-    if (
-      typeof lineNumber !== 'number' ||
-      !Number.isInteger(lineNumber) ||
-      lineNumber < 1 ||
-      !isValidSeverity(severity) ||
-      typeof message !== 'string' ||
-      message.trim().length === 0 ||
-      typeof suggestion !== 'string' ||
-      suggestion.trim().length === 0
-    ) {
-      continue;
-    }
-
-    validated.push({
-      lineNumber,
-      severity,
-      message: message.trim(),
-      suggestion: suggestion.trim(),
-    });
-  }
-
-  return validated;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function requestAiReview(request: ReviewRequest): Promise<RawComment[]> {
-  const userMessage = `Language: ${request.language}\n\n\`\`\`\n${request.code}\n\`\`\``;
+export async function requestAiReview(request: ReviewRequest): Promise<AiReviewResult> {
+  const userMessage = `Language hint: ${request.language}\n\n\`\`\`\n${request.code}\n\`\`\``;
 
   const result = await model.generateContent(userMessage);
   const content = result.response.text();
@@ -115,5 +154,5 @@ export async function requestAiReview(request: ReviewRequest): Promise<RawCommen
     throw new Error('Gemini returned an empty response');
   }
 
-  return parseAndValidateComments(content.trim());
+  return parseAndValidate(content);
 }

@@ -8,15 +8,25 @@ interface WorkspaceClientProps {
   workspaceId: string;
   userId: string;
   userName: string;
+  userAvatarUrl: string;
 }
 
-export default function WorkspaceClient({ workspaceId, userId, userName }: WorkspaceClientProps) {
+export default function WorkspaceClient({
+  workspaceId,
+  userId,
+  userName,
+  userAvatarUrl,
+}: WorkspaceClientProps) {
   const { socket, status } = useSocket();
 
   useEffect(() => {
     if (!socket || status !== 'connected') return;
-    socket.emit('JOIN_WORKSPACE', { workspaceId });
-  }, [socket, status, workspaceId]);
+    socket.emit('JOIN_WORKSPACE', workspaceId, {
+      id: userId,
+      name: userName,
+      avatarUrl: userAvatarUrl,
+    });
+  }, [socket, status, workspaceId, userId, userName, userAvatarUrl]);
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">

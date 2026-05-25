@@ -3,7 +3,12 @@ import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { Server } from 'socket.io';
-import type { ClientToServerEvents, ServerToClientEvents, SocketData } from '@codepulse/types';
+import type {
+  ActiveUser,
+  ClientToServerEvents,
+  ServerToClientEvents,
+  SocketData,
+} from '@codepulse/types';
 import { env } from './config/env.js';
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.routes.js';
@@ -49,15 +54,48 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
   },
 );
 
+// ── Presence tracking ─────────────────────────────────────────────────────────
+// Single-process in-memory map of socket.id → user + room. Cleared on disconnect
+// to prevent leaks. (Not horizontally scalable — Phase N would back this with
+// Redis adapter + presence store.)
+interface TrackedUser extends ActiveUser {
+  roomId: string;
+}
+const socketUserMap = new Map<string, TrackedUser>();
+
+function activeUsersInRoom(roomId: string): ActiveUser[] {
+  const users: ActiveUser[] = [];
+  for (const tracked of socketUserMap.values()) {
+    if (tracked.roomId === roomId) {
+      // Strip roomId before broadcasting — clients don't need it.
+      const { socketId, userId, name, avatarUrl } = tracked;
+      users.push({ socketId, userId, name, avatarUrl });
+    }
+  }
+  return users;
+}
+
 io.on('connection', (socket) => {
   console.log(`[socket] connected   id=${socket.id}`);
 
-  socket.on('JOIN_WORKSPACE', ({ workspaceId }) => {
+  socket.on('JOIN_WORKSPACE', (workspaceId, user) => {
     void socket.join(workspaceId);
     socket.data.workspaceId = workspaceId;
-    console.log(`[socket] id=${socket.id} joined workspace=${workspaceId}`);
+    socketUserMap.set(socket.id, {
+      socketId: socket.id,
+      userId: user.id,
+      name: user.name,
+      avatarUrl: user.avatarUrl,
+      roomId: workspaceId,
+    });
 
-    socket.to(workspaceId).emit('USER_JOINED', { userId: socket.id, workspaceId });
+    console.log(`[socket] id=${socket.id} (${user.name}) joined workspace=${workspaceId}`);
+
+    // Notify everyone in the room — including the joiner — of the full active list.
+    io.to(workspaceId).emit('ACTIVE_USERS', activeUsersInRoom(workspaceId));
+
+    // Legacy event kept for any listeners still relying on it.
+    socket.to(workspaceId).emit('USER_JOINED', { userId: user.id, workspaceId });
   });
 
   socket.on('CODE_CHANGE', ({ workspaceId, content }) => {
@@ -70,6 +108,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', (reason) => {
+    const tracked = socketUserMap.get(socket.id);
+    if (tracked) {
+      const { roomId } = tracked;
+      socketUserMap.delete(socket.id);
+      io.to(roomId).emit('ACTIVE_USERS', activeUsersInRoom(roomId));
+    }
     console.log(`[socket] disconnected id=${socket.id} reason=${reason}`);
   });
 });

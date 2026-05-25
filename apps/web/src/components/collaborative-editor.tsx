@@ -3,7 +3,13 @@
 import Editor, { type OnMount } from '@monaco-editor/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type * as Monaco from 'monaco-editor';
-import type { ClientToServerEvents, ServerToClientEvents, Workspace } from '@codepulse/types';
+import Image from 'next/image';
+import type {
+  ActiveUser,
+  ClientToServerEvents,
+  ServerToClientEvents,
+  Workspace,
+} from '@codepulse/types';
 import type { Socket } from 'socket.io-client';
 
 const API_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:5000';
@@ -73,6 +79,18 @@ interface WorkspaceApiResponse {
   workspace: Workspace;
 }
 
+// Numeric severities match Monaco's MarkerSeverity: 1=Hint, 2=Info, 4=Warning, 8=Error.
+interface AiReviewComment {
+  line: number;
+  message: string;
+  severity: 1 | 2 | 4 | 8;
+}
+
+interface AiReviewResult {
+  detectedLanguage: string;
+  comments: AiReviewComment[];
+}
+
 export interface CollaborativeEditorProps {
   workspaceId: string;
   socket: AppSocket | null;
@@ -89,10 +107,26 @@ export default function CollaborativeEditor({
   const [editor, setEditor] = useState<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const [monaco, setMonaco] = useState<typeof Monaco | null>(null);
 
+  // Imperative handles — survive re-renders and avoid stale-closure / state-timing
+  // issues when applying markers from inside async callbacks.
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const monacoRef = useRef<typeof Monaco | null>(null);
+
   // Hydration state
   const [workspaceData, setWorkspaceData] = useState<WorkspaceData | null>(null);
   const [isHydrating, setIsHydrating] = useState(true);
   const [hydrationError, setHydrationError] = useState(false);
+
+  // Editor language — seeded from hydration, then mutable via AI auto-detect.
+  const [language, setLanguage] = useState('javascript');
+
+  // AI review state
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzeFailed, setAnalyzeFailed] = useState(false);
+  const [editorEmpty, setEditorEmpty] = useState(false);
+
+  // Multiplayer presence — broadcast by the server on JOIN_WORKSPACE / disconnect.
+  const [activeUsers, setActiveUsers] = useState<ActiveUser[]>([]);
 
   // Save status
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
@@ -124,6 +158,7 @@ export default function CollaborativeEditor({
         const { workspace } = (await res.json()) as WorkspaceApiResponse;
         if (!cancelled) {
           setWorkspaceData({ code: workspace.code, language: workspace.language });
+          setLanguage(workspace.language || 'javascript');
         }
       } catch {
         if (!cancelled) setHydrationError(true);
@@ -159,6 +194,100 @@ export default function CollaborativeEditor({
       })();
     }, AUTOSAVE_DELAY_MS);
   }, [workspaceId]);
+
+  // ── AI review ──────────────────────────────────────────────────────────────
+  const flagAnalyzeFailure = useCallback((): void => {
+    setAnalyzeFailed(true);
+    setTimeout(() => setAnalyzeFailed(false), 2000);
+  }, []);
+
+  const flagEditorEmpty = useCallback((): void => {
+    setEditorEmpty(true);
+    setTimeout(() => setEditorEmpty(false), 2000);
+  }, []);
+
+  const handleAnalyze = useCallback(async (): Promise<void> => {
+    const ed = editorRef.current;
+    const mc = monacoRef.current;
+    if (!ed || !mc || isAnalyzing) return;
+
+    const model = ed.getModel();
+    if (!model) return;
+
+    // Early exit on empty/whitespace-only code — never start the spinner,
+    // never hit the network (the server would just 400 on empty code).
+    const code = ed.getValue();
+    if (!code.trim()) {
+      flagEditorEmpty();
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalyzeFailed(false);
+    try {
+      const res = await fetch(`${API_URL}/api/ai/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          workspaceId,
+          // The server only accepts 'javascript' | 'cpp' as the hint; the AI
+          // returns the *actual* detected language in the response body.
+          language: language === 'cpp' ? 'cpp' : 'javascript',
+          code,
+        }),
+      });
+
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        console.error(`[ai-review] ${res.status} ${res.statusText} —`, bodyText);
+        flagAnalyzeFailure();
+        return;
+      }
+
+      const result = (await res.json()) as AiReviewResult;
+
+      const lineCount = model.getLineCount();
+
+      // Map AI comments → Monaco IMarkerData. Clamp every line into the model's
+      // valid range — Monaco silently discards markers whose range is invalid,
+      // which is the most common reason "squiggles don't appear".
+      const markers: Monaco.editor.IMarkerData[] = result.comments.map((c) => {
+        const line = Math.min(Math.max(Math.floor(c.line), 1), lineCount);
+        return {
+          severity: c.severity,
+          message: c.message,
+          startLineNumber: line,
+          startColumn: 1,
+          endLineNumber: line,
+          endColumn: model.getLineMaxColumn(line) || 100,
+        };
+      });
+
+      mc.editor.setModelMarkers(model, 'ai-review', markers);
+
+      // Auto-language detection: update UI + Monaco model, persist in background.
+      const detected = result.detectedLanguage;
+      if (detected && detected !== language) {
+        setLanguage(detected);
+        mc.editor.setModelLanguage(model, detected);
+
+        void fetch(`${API_URL}/api/workspaces/${workspaceId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ language: detected }),
+        }).catch((err: unknown) => {
+          console.error('[ai-review] Failed to persist detected language:', err);
+        });
+      }
+    } catch (err) {
+      console.error('[ai-review] Network error:', err);
+      flagAnalyzeFailure();
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [isAnalyzing, workspaceId, language, flagAnalyzeFailure, flagEditorEmpty]);
 
   // ── Redraw ghost-cursor decorations ───────────────────────────────────────
   function applyDecorations(
@@ -230,17 +359,25 @@ export default function CollaborativeEditor({
       applyDecorations(ed, mc);
     }
 
+    function onActiveUsers(users: ActiveUser[]): void {
+      setActiveUsers(users);
+    }
+
     socket.on('CODE_CHANGE', onCodeChange);
     socket.on('CURSOR_MOVE', onCursorMove);
+    socket.on('ACTIVE_USERS', onActiveUsers);
 
     return () => {
       socket.off('CODE_CHANGE', onCodeChange);
       socket.off('CURSOR_MOVE', onCursorMove);
+      socket.off('ACTIVE_USERS', onActiveUsers);
     };
   }, [socket, editor, monaco]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Monaco mount ──────────────────────────────────────────────────────────
   const handleMount: OnMount = (ed, mc) => {
+    editorRef.current = ed;
+    monacoRef.current = mc;
     setEditor(ed);
     setMonaco(mc);
     ed.focus();
@@ -294,7 +431,7 @@ export default function CollaborativeEditor({
     );
   }
 
-  const { code: initialCode, language } = workspaceData;
+  const initialCode = workspaceData.code;
 
   // ── Save status chip ───────────────────────────────────────────────────────
   const saveChip = {
@@ -342,9 +479,119 @@ export default function CollaborativeEditor({
           workspace:{workspaceId} &middot; {language}
         </span>
 
-        {/* Save status chip */}
-        <div className="flex w-28 items-center justify-end">
-          {saveChip}
+        {/* Right cluster: presence avatars + save chip + AI button */}
+        <div className="flex items-center gap-3">
+          {/* Active users — Google Docs–style overlapping stack */}
+          {activeUsers.length > 0 && (
+            <div className="flex items-center -space-x-2 overflow-hidden mr-4">
+              {activeUsers.map((user) => (
+                <span
+                  key={user.socketId}
+                  title={user.name}
+                  className="inline-flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border border-surface-600 bg-surface-700 ring-2 ring-surface-900"
+                >
+                  {user.avatarUrl ? (
+                    <Image
+                      src={user.avatarUrl}
+                      alt={user.name}
+                      width={32}
+                      height={32}
+                      className="h-full w-full rounded-full object-cover"
+                      unoptimized
+                    />
+                  ) : (
+                    <span className="text-xs font-semibold uppercase text-slate-300">
+                      {user.name.charAt(0) || '?'}
+                    </span>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="flex w-28 items-center justify-end">
+            {saveChip}
+          </div>
+
+          <button
+            onClick={() => void handleAnalyze()}
+            disabled={isAnalyzing}
+            className={`
+              flex items-center gap-2 rounded px-3 py-1.5 text-xs
+              backdrop-blur-sm transition-all duration-200
+              disabled:cursor-not-allowed disabled:opacity-50
+              ${
+                analyzeFailed
+                  ? 'border border-red-500/40 bg-red-600/10 text-red-400'
+                  : editorEmpty
+                    ? 'border border-yellow-500/40 bg-yellow-600/10 text-yellow-400'
+                    : `border border-brand-500/40 bg-brand-600/10 text-brand-400
+                       hover:bg-brand-600/20 hover:border-brand-500/60
+                       hover:shadow-[0_0_12px_rgba(99,102,241,0.4)]
+                       disabled:hover:shadow-none disabled:hover:bg-brand-600/10`
+              }
+            `}
+          >
+            {isAnalyzing ? (
+              <>
+                <svg className="h-3.5 w-3.5 animate-spin text-brand-400" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <span className="animate-pulse">Analyzing…</span>
+              </>
+            ) : analyzeFailed ? (
+              <>
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+                Failed!
+              </>
+            ) : editorEmpty ? (
+              <>
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 8v4" />
+                  <path d="M12 16h.01" />
+                </svg>
+                Editor is empty!
+              </>
+            ) : (
+              <>
+                <svg
+                  className="h-3.5 w-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1m-8.6 8.6l-2.1 2.1" />
+                </svg>
+                Analyze with AI
+              </>
+            )}
+          </button>
         </div>
       </div>
 

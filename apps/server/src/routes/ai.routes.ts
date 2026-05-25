@@ -1,7 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import { Types } from 'mongoose';
 import { requireAuth } from '../middleware/auth.middleware.js';
-import { requestAiReview } from '../services/ai-review.js';
+import {
+  requestAiReview,
+  markerSeverityToReviewSeverity,
+  type AiReviewResult,
+} from '../services/ai-review.js';
 import { ReviewCommentModel } from '../models/review-comment.model.js';
 
 const router = Router();
@@ -19,7 +23,7 @@ const AI_AUTHOR_ID = new Types.ObjectId('000000000000000000000001');
  * POST /api/ai/review
  *
  * Body:    { workspaceId: string, language: 'javascript' | 'cpp', code: string }
- * Returns: { success: true, reviews: ReviewComment[] }
+ * Returns: AiReviewResult = { detectedLanguage: string, comments: AiReviewComment[] }
  */
 router.post('/review', async (req: Request, res: Response): Promise<void> => {
   const body = req.body as Record<string, unknown>;
@@ -44,9 +48,9 @@ router.post('/review', async (req: Request, res: Response): Promise<void> => {
   }
 
   // ── Call Gemini ─────────────────────────────────────────────────────────────
-  let rawComments: Awaited<ReturnType<typeof requestAiReview>>;
+  let review: AiReviewResult;
   try {
-    rawComments = await requestAiReview({ language, code });
+    review = await requestAiReview({ language, code });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown AI error';
     console.error('[ai/review] Gemini pipeline error:', message);
@@ -54,26 +58,26 @@ router.post('/review', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // ── Persist to MongoDB ──────────────────────────────────────────────────────
-  let saved: InstanceType<typeof ReviewCommentModel>[];
+  // ── Persist to MongoDB (best-effort: never block the response on this) ──────
   try {
-    const docs = rawComments.map((c) => ({
+    const docs = review.comments.map((c) => ({
       workspaceId: new Types.ObjectId(workspaceId),
       authorId: AI_AUTHOR_ID,
-      lineNumber: c.lineNumber,
-      severity: c.severity,
+      lineNumber: c.line,
+      severity: markerSeverityToReviewSeverity(c.severity),
       message: c.message,
-      suggestion: c.suggestion,
+      suggestion: c.message,
     }));
 
-    saved = await ReviewCommentModel.insertMany(docs, { ordered: false });
+    if (docs.length > 0) {
+      await ReviewCommentModel.insertMany(docs, { ordered: false });
+    }
   } catch (err) {
-    console.error('[ai/review] DB insert error:', err);
-    res.status(500).json({ error: 'Failed to persist review comments.' });
-    return;
+    // Persistence is secondary — the markers are the primary deliverable.
+    console.error('[ai/review] DB insert error (non-fatal):', err);
   }
 
-  res.status(201).json({ success: true, reviews: saved.map((doc) => doc.toJSON()) });
+  res.status(200).json(review);
 });
 
 export default router;
