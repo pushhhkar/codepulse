@@ -4,6 +4,7 @@ import fetch from 'node-fetch';
 import { env } from '../config/env.js';
 import { UserModel } from '../models/user.model.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
+import { encrypt } from '../utils/encryption.js';
 
 const router = Router();
 
@@ -30,7 +31,7 @@ router.get('/github', (_req: Request, res: Response): void => {
   const params = new URLSearchParams({
     client_id: env.github.clientId,
     redirect_uri: env.github.callbackUrl,
-    scope: 'read:user user:email',
+    scope: 'read:user user:email repo',
   });
   res.redirect(`${GITHUB_AUTHORIZE_URL}?${params.toString()}`);
 });
@@ -101,6 +102,9 @@ router.get('/github/callback', async (req: Request, res: Response): Promise<void
           email,
           avatarUrl: githubUser.avatar_url,
           githubId: String(githubUser.id),
+          // Encrypted at rest (AES-256-GCM), stored server-side only (select: false)
+          // for later GitHub API calls on the user's behalf. Never sent to the client.
+          githubAccessToken: encrypt(accessToken),
         },
       },
       { upsert: true, new: true, runValidators: true },

@@ -156,3 +156,90 @@ export async function requestAiReview(request: ReviewRequest): Promise<AiReviewR
 
   return parseAndValidate(content);
 }
+
+// ── Pull-request review (diff → GitHub review comments) ────────────────────────
+
+export interface PullRequestComment {
+  path: string;
+  line: number;
+  body: string;
+}
+
+const prReviewModel = genAI.getGenerativeModel({
+  model: 'gemini-2.5-flash',
+  systemInstruction:
+    'You are a senior software engineer performing an automated pull request review. ' +
+    'You are given a unified git diff. Identify bugs, security vulnerabilities, and bad ' +
+    'practices introduced in the added/changed lines only. ' +
+    'Return ONLY a raw JSON array — no markdown, no code fences, no prose. ' +
+    'Each element must strictly match: ' +
+    '{ "path": "string (file path relative to the repo root, from the diff header)", ' +
+    '"line": number (the line number in the NEW version of the file where the issue applies), ' +
+    '"body": "string (a concise, markdown-formatted review comment)" }. ' +
+    'Only comment on lines that are part of the diff. If there are no issues, return [].',
+  generationConfig: {
+    responseMimeType: 'application/json',
+    temperature: 0.2,
+  },
+});
+
+function parsePrComments(raw: string): PullRequestComment[] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(stripMarkdownFence(raw));
+  } catch {
+    throw new Error(`AI returned non-JSON response: ${raw.slice(0, 200)}`);
+  }
+
+  // Gemini sometimes wraps the array in an object; unwrap the first array value.
+  if (!Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
+    const firstArray = Object.values(parsed as Record<string, unknown>).find(Array.isArray);
+    if (firstArray !== undefined) parsed = firstArray;
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('AI response was not a JSON array');
+  }
+
+  const comments: PullRequestComment[] = [];
+
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) continue;
+
+    const c = item as Record<string, unknown>;
+    const path = c['path'];
+    const line = c['line'];
+    const body = c['body'];
+
+    // Silently skip malformed entries rather than rejecting the whole batch.
+    if (
+      typeof path !== 'string' ||
+      path.trim().length === 0 ||
+      typeof line !== 'number' ||
+      !Number.isInteger(line) ||
+      line < 1 ||
+      typeof body !== 'string' ||
+      body.trim().length === 0
+    ) {
+      continue;
+    }
+
+    comments.push({ path: path.trim(), line, body: body.trim() });
+  }
+
+  return comments;
+}
+
+export async function requestPrReview(diff: string): Promise<PullRequestComment[]> {
+  const userMessage = `Review the following unified git diff:\n\n\`\`\`diff\n${diff}\n\`\`\``;
+
+  const result = await prReviewModel.generateContent(userMessage);
+  const content = result.response.text();
+
+  if (!content) {
+    throw new Error('Gemini returned an empty response');
+  }
+
+  return parsePrComments(content);
+}

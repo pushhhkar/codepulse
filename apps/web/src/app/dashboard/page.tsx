@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { getServerUser } from '@/lib/auth';
 import NewWorkspaceButton from '@/components/new-workspace-button';
 import DeleteWorkspaceButton from '@/components/delete-workspace-button';
+import PrReviewCard from '@/components/pr-review-card';
 import type { Workspace } from '@codepulse/types';
 
 export const metadata: Metadata = {
@@ -105,6 +106,11 @@ export default async function DashboardPage() {
             </div>
           </div>
         </section>
+
+        {/* Automated PR reviewer */}
+        <div className="mt-10">
+          <PrReviewCard />
+        </div>
 
         {/* Workspaces grid */}
         <section className="mt-10">

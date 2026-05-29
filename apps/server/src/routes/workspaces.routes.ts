@@ -54,7 +54,8 @@ router.get('/', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// GET /:id — fetch a single workspace (owner or public)
+// GET /:id — fetch a single workspace.
+// Any authenticated user with the link can view (collaborative-by-link model).
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
 
@@ -67,12 +68,6 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
     const workspace = await WorkspaceModel.findById(id).lean({ virtuals: true });
 
     if (!workspace) {
-      res.status(404).json({ error: 'Workspace not found.' });
-      return;
-    }
-
-    const ownerId = String(workspace.ownerId);
-    if (!workspace.isPublic && ownerId !== req.user!.id) {
       res.status(404).json({ error: 'Workspace not found.' });
       return;
     }
@@ -90,7 +85,8 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// PATCH /:id — update code, language, or title (owner only)
+// PATCH /:id — update code, language, or title.
+// Any authenticated guest in the workspace can trigger auto-saves.
 router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
 
@@ -107,8 +103,8 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   if (typeof body['title'] === 'string') update.title = body['title'];
 
   try {
-    const workspace = await WorkspaceModel.findOneAndUpdate(
-      { _id: id, ownerId: req.user!.id },
+    const workspace = await WorkspaceModel.findByIdAndUpdate(
+      id,
       { $set: update },
       { new: true, runValidators: true },
     ).lean({ virtuals: true });
