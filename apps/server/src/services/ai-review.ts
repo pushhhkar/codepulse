@@ -159,10 +159,13 @@ export async function requestAiReview(request: ReviewRequest): Promise<AiReviewR
 
 // ── Pull-request review (diff → GitHub review comments) ────────────────────────
 
+export type PrCommentPriority = 'CRITICAL' | 'IMPORTANT' | 'MODERATE' | 'MINOR';
+
 export interface PullRequestComment {
   path: string;
   line: number;
   body: string;
+  priority: PrCommentPriority;
 }
 
 const prReviewModel = genAI.getGenerativeModel({
@@ -175,7 +178,13 @@ const prReviewModel = genAI.getGenerativeModel({
     'Each element must strictly match: ' +
     '{ "path": "string (file path relative to the repo root, from the diff header)", ' +
     '"line": number (the line number in the NEW version of the file where the issue applies), ' +
-    '"body": "string (a concise, markdown-formatted review comment)" }. ' +
+    '"body": "string (a concise, markdown-formatted review comment)", ' +
+    '"priority": "string (one of: CRITICAL, IMPORTANT, MODERATE, MINOR)" }. ' +
+    'Assign priority using these rules — ' +
+    'CRITICAL: security flaws, broken business logic, or app-crashing bugs; ' +
+    'IMPORTANT: performance bottlenecks, memory leaks, or bad architectural patterns; ' +
+    'MODERATE: code smells, missing error handling, or unhandled edge cases; ' +
+    'MINOR: typos, formatting issues, or minor refactoring suggestions. ' +
     'Only comment on lines that are part of the diff. If there are no issues, return [].',
   generationConfig: {
     responseMimeType: 'application/json',
@@ -202,6 +211,15 @@ function parsePrComments(raw: string): PullRequestComment[] {
     throw new Error('AI response was not a JSON array');
   }
 
+  const VALID_PRIORITIES = new Set<PrCommentPriority>(['CRITICAL', 'IMPORTANT', 'MODERATE', 'MINOR']);
+
+  const PRIORITY_BADGE: Record<PrCommentPriority, string> = {
+    CRITICAL:  '🔴',
+    IMPORTANT: '🟠',
+    MODERATE:  '🟡',
+    MINOR:     '🔵',
+  };
+
   const comments: PullRequestComment[] = [];
 
   for (const item of parsed) {
@@ -211,6 +229,7 @@ function parsePrComments(raw: string): PullRequestComment[] {
     const path = c['path'];
     const line = c['line'];
     const body = c['body'];
+    const rawPriority = c['priority'];
 
     // Silently skip malformed entries rather than rejecting the whole batch.
     if (
@@ -225,8 +244,14 @@ function parsePrComments(raw: string): PullRequestComment[] {
       continue;
     }
 
-    const branded = `> 🤖 **Reviewed with CodePulse**\n> \n> ${body.trim()}`;
-    comments.push({ path: path.trim(), line, body: branded });
+    const priority: PrCommentPriority =
+      typeof rawPriority === 'string' && VALID_PRIORITIES.has(rawPriority as PrCommentPriority)
+        ? (rawPriority as PrCommentPriority)
+        : 'MODERATE';
+
+    const badge = PRIORITY_BADGE[priority];
+    const branded = `> ${badge} **${priority} | Reviewed with CodePulse**\n> \n> ${body.trim()}`;
+    comments.push({ path: path.trim(), line, body: branded, priority });
   }
 
   return comments;
