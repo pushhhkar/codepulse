@@ -225,7 +225,8 @@ function parsePrComments(raw: string): PullRequestComment[] {
       continue;
     }
 
-    comments.push({ path: path.trim(), line, body: body.trim() });
+    const branded = `> 🤖 **Reviewed with CodePulse**\n> \n> ${body.trim()}`;
+    comments.push({ path: path.trim(), line, body: branded });
   }
 
   return comments;
