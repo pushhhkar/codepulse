@@ -208,7 +208,7 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
         body: JSON.stringify({
           body: 'CodePulse AI Automated Review',
           event: 'COMMENT',
-          comments,
+          comments: comments.map(({ path, line, body }) => ({ path, line, body })),
         }),
       },
     );
