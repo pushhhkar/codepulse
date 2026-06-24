@@ -15,6 +15,7 @@ import authRoutes from './routes/auth.routes.js';
 import sandboxRoutes from './routes/sandbox.routes.js';
 import aiRoutes from './routes/ai.routes.js';
 import workspacesRoutes from './routes/workspaces.routes.js';
+import webhookRoutes from './routes/webhook.routes.js';
 
 const app = express();
 
@@ -26,7 +27,15 @@ app.use(
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   }),
 );
-app.use(express.json());
+app.use(
+  express.json({
+    // Capture the exact raw bytes so webhook HMAC signatures can be verified
+    // against the byte-for-byte payload GitHub signed.
+    verify: (req, _res, buf) => {
+      (req as express.Request).rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
@@ -39,6 +48,7 @@ app.use('/auth', authRoutes);
 app.use('/api/sandbox', sandboxRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/workspaces', workspacesRoutes);
+app.use('/webhook', webhookRoutes);
 
 // ── HTTP server (Socket.io must own the server instance, not Express) ─────────
 const httpServer = createServer(app);

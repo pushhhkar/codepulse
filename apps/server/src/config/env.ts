@@ -18,6 +18,7 @@ export const env = {
     callbackUrl: requireEnv('GITHUB_CALLBACK_URL'),
   },
   jwtSecret: requireEnv('JWT_SECRET'),
+  webhookSecret: requireEnv('WEBHOOK_SECRET'),
   clientUrl: requireEnv('CLIENT_URL'),
   geminiApiKey: requireEnv('GEMINI_API_KEY'),
   encryptionKey: requireEnv('ENCRYPTION_KEY'),
