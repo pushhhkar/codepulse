@@ -7,6 +7,7 @@ import { getServerUser } from '@/lib/auth';
 import NewWorkspaceButton from '@/components/new-workspace-button';
 import DeleteWorkspaceButton from '@/components/delete-workspace-button';
 import PrReviewCard from '@/components/pr-review-card';
+import IntegrationStatusCard from '@/components/integration-status-card';
 import type { Workspace } from '@codepulse/types';
 
 export const metadata: Metadata = {
@@ -64,32 +65,17 @@ export default async function DashboardPage() {
   const workspaces = await fetchWorkspaces(token);
 
   return (
-    <main className="flex min-h-screen flex-col bg-surface-900">
-      {/* Top nav */}
-      <header className="border-b border-surface-700 bg-surface-800 px-6 py-4">
-        <div className="mx-auto flex max-w-7xl items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
-              CP
-            </span>
-            <span className="font-semibold text-white">CodePulse</span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-400">{user.email}</span>
-            <Image
-              src={user.avatarUrl}
-              alt={`${user.name}'s avatar`}
-              width={32}
-              height={32}
-              className="rounded-full ring-2 ring-brand-500"
-            />
-          </div>
-        </div>
-      </header>
+    <main className="mx-auto w-full max-w-6xl px-8 py-10">
+      {/* Page heading */}
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold tracking-tight text-white">Dashboard</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Manage your integrations and collaborative workspaces.
+        </p>
+      </div>
 
       {/* Dashboard body */}
-      <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-12">
+      <div className="w-full">
         {/* Welcome banner */}
         <section className="rounded-2xl border border-surface-700 bg-surface-800 p-8">
           <div className="flex items-center gap-5">
@@ -102,10 +88,15 @@ export default async function DashboardPage() {
             />
             <div>
               <p className="text-sm text-slate-400">Signed in as</p>
-              <h1 className="text-3xl font-bold text-white">{user.name}</h1>
+              <p className="text-3xl font-bold text-white">{user.name}</p>
             </div>
           </div>
         </section>
+
+        {/* GitHub App integration */}
+        <div className="mt-10">
+          <IntegrationStatusCard />
+        </div>
 
         {/* Automated PR reviewer */}
         <div className="mt-10">

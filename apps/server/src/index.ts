@@ -16,6 +16,7 @@ import sandboxRoutes from './routes/sandbox.routes.js';
 import aiRoutes from './routes/ai.routes.js';
 import workspacesRoutes from './routes/workspaces.routes.js';
 import webhookRoutes from './routes/webhook.routes.js';
+import githubRoutes from './routes/github.routes.js';
 
 const app = express();
 
@@ -48,6 +49,7 @@ app.use('/auth', authRoutes);
 app.use('/api/sandbox', sandboxRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/workspaces', workspacesRoutes);
+app.use('/api/github', githubRoutes);
 app.use('/webhook', webhookRoutes);
 
 // ── HTTP server (Socket.io must own the server instance, not Express) ─────────

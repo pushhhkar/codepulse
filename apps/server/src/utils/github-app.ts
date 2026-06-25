@@ -77,3 +77,121 @@ export async function getInstallationToken(installationId: string): Promise<stri
 
   return data.token;
 }
+
+// ── Installation discovery ──────────────────────────────────────────────────────
+
+export interface AppInstallation {
+  id: number;
+  accountId: number | null;
+  accountLogin: string | null;
+}
+
+/**
+ * List every installation of this GitHub App, authenticated with the app JWT.
+ * Used to detect whether a given user account has the app installed.
+ */
+export async function listAppInstallations(): Promise<AppInstallation[]> {
+  const appJwt = generateAppJwt();
+
+  const res = await fetch(`${GITHUB_API}/app/installations?per_page=100`, {
+    headers: {
+      Authorization: `Bearer ${appJwt}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'CodePulse',
+    },
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Failed to list app installations (${res.status}): ${detail}`);
+  }
+
+  const raw = await res.json();
+  if (!Array.isArray(raw)) return [];
+
+  const installations: AppInstallation[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const id = obj['id'];
+    if (typeof id !== 'number') continue;
+
+    const account =
+      typeof obj['account'] === 'object' && obj['account'] !== null
+        ? (obj['account'] as Record<string, unknown>)
+        : null;
+    const accountId = account && typeof account['id'] === 'number' ? account['id'] : null;
+    const accountLogin =
+      account && typeof account['login'] === 'string' ? account['login'] : null;
+
+    installations.push({ id, accountId, accountLogin });
+  }
+
+  return installations;
+}
+
+export interface InstallationRepo {
+  id: number;
+  name: string;
+  fullName: string;
+  isPrivate: boolean;
+  htmlUrl: string;
+  description: string | null;
+  language: string | null;
+  updatedAt: string | null;
+}
+
+/**
+ * List the repositories a given installation can access, authenticated with a
+ * freshly-minted installation access token.
+ */
+export async function listInstallationRepositories(
+  installationId: string,
+): Promise<InstallationRepo[]> {
+  const token = await getInstallationToken(installationId);
+
+  const res = await fetch(`${GITHUB_API}/installation/repositories?per_page=100`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'CodePulse',
+    },
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Failed to list installation repositories (${res.status}): ${detail}`);
+  }
+
+  const data = (await res.json()) as { repositories?: unknown };
+  const raw = Array.isArray(data.repositories) ? data.repositories : [];
+
+  const repos: InstallationRepo[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+
+    const id = obj['id'];
+    const fullName = obj['full_name'];
+    const name = obj['name'];
+    const htmlUrl = obj['html_url'];
+    if (typeof id !== 'number' || typeof fullName !== 'string' || typeof name !== 'string') {
+      continue;
+    }
+
+    repos.push({
+      id,
+      name,
+      fullName,
+      isPrivate: obj['private'] === true,
+      htmlUrl: typeof htmlUrl === 'string' ? htmlUrl : `https://github.com/${fullName}`,
+      description: typeof obj['description'] === 'string' ? obj['description'] : null,
+      language: typeof obj['language'] === 'string' ? obj['language'] : null,
+      updatedAt: typeof obj['updated_at'] === 'string' ? obj['updated_at'] : null,
+    });
+  }
+
+  return repos;
+}
