@@ -4,11 +4,20 @@ import fetch from 'node-fetch';
 import { env } from '../config/env.js';
 import { requestPrReview, type PullRequestComment } from '../services/ai-review.js';
 import { getInstallationToken } from '../utils/github-app.js';
+import {
+  parseUnifiedDiff,
+  validateAiComments,
+  type FileDiff,
+  type ValidatedComment,
+} from '../utils/diff-validation.js';
 
 const router = Router();
 
 const GITHUB_API = 'https://api.github.com';
 const CHECK_RUN_NAME = 'CodePulse AI Review';
+const REREVIEW_ACTION_ID = 'rereview';
+const REREVIEW_ACTION_LABEL = 'Re-review';
+const REREVIEW_ACTION_DESC = 'Run CodePulse AI review again';
 
 // ── HMAC signature verification ─────────────────────────────────────────────────
 
@@ -67,6 +76,47 @@ function extractPrContext(payload: Record<string, unknown>): PrWebhookContext | 
     (typeof installationId !== 'number' && typeof installationId !== 'string') ||
     typeof ownerLogin !== 'string' ||
     typeof repoName !== 'string' ||
+    typeof sha !== 'string' ||
+    typeof pullNumber !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    installationId: String(installationId),
+    owner: ownerLogin,
+    repo: repoName,
+    sha,
+    pullNumber,
+  };
+}
+
+/** Extract PR context from a check_run webhook payload. */
+function extractPrContextFromCheckRun(payload: Record<string, unknown>): PrWebhookContext | null {
+  const installation = asRecord(payload['installation']);
+  const checkRun = asRecord(payload['check_run']);
+  const repository = asRecord(payload['repository']);
+  if (!installation || !checkRun || !repository) return null;
+
+  const pullRequests = checkRun['pull_requests'];
+  if (!Array.isArray(pullRequests) || pullRequests.length === 0) return null;
+
+  const pr = pullRequests[0];
+  const head = asRecord(pr['head']);
+  if (!head) return null;
+
+  const fullName = repository['full_name'];
+  if (typeof fullName !== 'string') return null;
+
+  const [ownerLogin, repoName] = fullName.split('/');
+  if (!ownerLogin || !repoName) return null;
+
+  const installationId = installation['id'];
+  const sha = head['sha'];
+  const pullNumber = pr['number'];
+
+  if (
+    (typeof installationId !== 'number' && typeof installationId !== 'string') ||
     typeof sha !== 'string' ||
     typeof pullNumber !== 'number'
   ) {
@@ -173,7 +223,8 @@ async function postReviewComments(
   owner: string,
   repo: string,
   pullNumber: number,
-  comments: PullRequestComment[],
+  commitId: string,
+  comments: ValidatedComment[],
 ): Promise<void> {
   if (comments.length === 0) return;
 
@@ -183,8 +234,9 @@ async function postReviewComments(
     body: JSON.stringify({
       body: 'CodePulse AI Automated Review',
       event: 'COMMENT',
+      commit_id: commitId,
       // `priority` is internal-only; GitHub rejects unknown comment fields (422).
-      comments: comments.map(({ path, line, body }) => ({ path, line, body })),
+      comments: comments.map(({ path, line, body, side }) => ({ path, line, body, side })),
     }),
   });
 
@@ -207,15 +259,87 @@ async function runReviewInBackground(
     const diff = await fetchPrDiff(token, owner, repo, pullNumber);
     const comments = diff.trim().length > 0 ? await requestPrReview(diff) : [];
 
-    await postReviewComments(token, owner, repo, pullNumber, comments);
+    if (comments.length === 0) {
+      await patchCheckRun(token, owner, repo, checkRunId, {
+        status: 'completed',
+        conclusion: 'success',
+        output: {
+          title: 'Review Complete',
+          summary: 'No issues found.',
+        },
+        actions: [
+          {
+            label: REREVIEW_ACTION_LABEL,
+            identifier: REREVIEW_ACTION_ID,
+            description: 'Trigger a fresh CodePulse AI review of this PR',
+          },
+        ],
+      });
+      return;
+    }
+
+    // Parse diff and validate comments against actual diff
+    const fileDiffs = parseUnifiedDiff(diff);
+    const fileDiffMap = new Map(fileDiffs.map((fd) => [fd.path, fd]));
+    const { validComments, skippedComments } = validateAiComments(comments, fileDiffMap);
+
+    // Fetch PR metadata to get head.sha (commit_id) for review posting
+    let commitId: string;
+    try {
+      const prRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${pullNumber}`, {
+        headers: githubHeaders(token),
+      });
+      if (!prRes.ok) {
+        throw new Error(`PR metadata fetch failed (${prRes.status})`);
+      }
+      const prData = (await prRes.json()) as { head?: { sha?: string } };
+      commitId = prData.head?.sha ?? ctx.sha;
+    } catch {
+      commitId = ctx.sha;
+    }
+
+    // Only post valid comments
+    if (validComments.length > 0) {
+      await postReviewComments(token, owner, repo, pullNumber, commitId, validComments);
+    }
+
+    const criticalCount = comments.filter((c) => c.priority === 'CRITICAL').length;
+    const importantCount = comments.filter((c) => c.priority === 'IMPORTANT').length;
+    const moderateCount = comments.filter((c) => c.priority === 'MODERATE').length;
+    const minorCount = comments.filter((c) => c.priority === 'MINOR').length;
+
+    let summary: string;
+    if (validComments.length === 0) {
+      summary = 'No valid comments could be mapped to the PR diff. Nothing posted to GitHub.';
+      if (skippedComments.length > 0) {
+        summary += ` (${skippedComments.length} AI comment${skippedComments.length === 1 ? '' : 's'} skipped)`;
+      }
+    } else {
+      const parts: string[] = [];
+      if (criticalCount) parts.push(`${criticalCount} Critical`);
+      if (importantCount) parts.push(`${importantCount} Important`);
+      if (moderateCount) parts.push(`${moderateCount} Moderate`);
+      if (minorCount) parts.push(`${minorCount} Minor`);
+      summary = `CodePulse found ${comments.length} suggestion${comments.length === 1 ? '' : 's'} (${parts.join(', ')}).`;
+      if (skippedComments.length > 0) {
+        summary += ` ${skippedComments.length} skipped.`;
+      }
+    }
 
     await patchCheckRun(token, owner, repo, checkRunId, {
       status: 'completed',
-      conclusion: 'success',
+      conclusion: validComments.length > 0 ? 'success' : 'neutral',
       output: {
-        title: 'Review Complete',
-        summary: `CodePulse found ${comments.length} suggestion${comments.length === 1 ? '' : 's'}.`,
+        title: validComments.length > 0 ? 'Review Complete' : 'Review Completed (No Valid Comments)',
+        summary,
       },
+      actions: [
+        {
+          label: REREVIEW_ACTION_LABEL,
+          identifier: REREVIEW_ACTION_ID,
+          description: REREVIEW_ACTION_DESC,
+        },
+      ],
     });
   } catch (err) {
     console.error('[webhook/github] Background review failed:', err);
@@ -241,9 +365,9 @@ async function runReviewInBackground(
 /**
  * POST /webhook/github
  *
- * GitHub App webhook receiver. Acts only on `pull_request` events with an
- * `opened` or `synchronize` action: opens a check run, acks immediately with
- * 202, then runs the AI review in the background.
+ * GitHub App webhook receiver. Handles:
+ * - `pull_request` events (opened, synchronize): opens a check run, runs AI review
+ * - `check_run` events (requested_action with rereview): re-runs AI review
  */
 router.post('/github', async (req: Request, res: Response): Promise<void> => {
   // Reject any payload that isn't signed by GitHub with our shared secret.
@@ -253,17 +377,31 @@ router.post('/github', async (req: Request, res: Response): Promise<void> => {
   }
 
   const event = req.header('x-github-event');
+  const payload = asRecord(req.body) ?? {};
 
-  // Ack non-pull_request events so GitHub doesn't retry them.
+  // Handle check_run.requested_action for re-review
+  if (event === 'check_run') {
+    const action = payload['action'];
+    if (action === 'requested_action') {
+      const requestedAction = asRecord(payload['requested_action']);
+      if (requestedAction?.['identifier'] === REREVIEW_ACTION_ID) {
+        await handleRereview(payload, res);
+        return;
+      }
+    }
+    // Ack other check_run events
+    res.status(204).end();
+    return;
+  }
+
+  // Handle pull_request events (opened, synchronize)
   if (event !== 'pull_request') {
     res.status(204).end();
     return;
   }
 
-  const payload = asRecord(req.body) ?? {};
-  const action = payload['action'];
-
-  if (action !== 'opened' && action !== 'synchronize') {
+  const prAction = payload['action'];
+  if (prAction !== 'opened' && prAction !== 'synchronize') {
     res.status(204).end();
     return;
   }
@@ -299,5 +437,42 @@ router.post('/github', async (req: Request, res: Response): Promise<void> => {
 
   void runReviewInBackground(token, ctx, checkRunId);
 });
+
+/** Handle re-review requested action from check_run webhook. */
+async function handleRereview(payload: Record<string, unknown>, res: Response): Promise<void> {
+  const ctx = extractPrContextFromCheckRun(payload);
+  if (!ctx) {
+    console.warn('[webhook/github] Could not extract PR context from check_run payload');
+    res.status(400).json({ error: 'Could not extract PR context from check_run payload.' });
+    return;
+  }
+
+  const { installationId, owner, repo, sha, pullNumber } = ctx;
+
+  // Authenticate as this specific installation.
+  let token: string;
+  try {
+    token = await getInstallationToken(installationId);
+  } catch (err) {
+    console.error('[webhook/github] Installation token error for re-review:', err);
+    res.status(500).json({ error: 'Failed to authenticate as GitHub App installation.' });
+    return;
+  }
+
+  // Create a new check run for the re-review (same SHA, new check run)
+  let checkRunId: number;
+  try {
+    checkRunId = await createCheckRun(token, owner, repo, sha);
+  } catch (err) {
+    console.error('[webhook/github] Check run init error for re-review:', err);
+    res.status(500).json({ error: 'Failed to create check run for re-review.' });
+    return;
+  }
+
+  // Ack GitHub immediately; re-review runs in the background.
+  res.status(202).json({ checkRunId });
+
+  void runReviewInBackground(token, { ...ctx, sha }, checkRunId);
+}
 
 export default router;

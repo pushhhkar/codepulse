@@ -12,6 +12,19 @@ import {
 import { ReviewCommentModel } from '../models/review-comment.model.js';
 import { UserModel } from '../models/user.model.js';
 import { decrypt } from '../utils/encryption.js';
+import {
+  parseUnifiedDiff,
+  matchDiffPath,
+  isLineCommentable,
+  validateAiComments,
+  type FileDiff,
+  type ValidatedComment,
+} from '../utils/diff-validation.js';
+
+interface PrMetadata {
+  head: { sha: string };
+  base: { sha: string };
+}
 
 const router = Router();
 
@@ -150,6 +163,34 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
+  // ── Fetch PR metadata to get head.sha (commit_id) ─────────────────────────────
+  let prMetadata: PrMetadata;
+  try {
+    const prRes = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/pulls/${pullNumber}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'CodePulse',
+      },
+    });
+
+    if (!prRes.ok) {
+      const detail = await prRes.text().catch(() => '');
+      console.error(`[ai/review-pr] GitHub PR metadata fetch failed: ${prRes.status}`, detail);
+      res.status(502).json({ error: `Failed to fetch PR metadata from GitHub (${prRes.status}).` });
+      return;
+    }
+
+    prMetadata = (await prRes.json()) as PrMetadata;
+  } catch (err) {
+    console.error('[ai/review-pr] GitHub PR metadata request error:', err);
+    res.status(502).json({ error: 'Failed to reach GitHub to fetch PR metadata.' });
+    return;
+  }
+
+  const commitId = prMetadata.head.sha;
+
   // ── Fetch the raw unified diff from GitHub ──────────────────────────────────
   let diff: string;
   try {
@@ -181,6 +222,10 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
     return;
   }
 
+  // ── Parse diff and build commentable line mapping per file ────────────────────
+  const fileDiffs = parseUnifiedDiff(diff);
+  const fileDiffMap = new Map(fileDiffs.map((fd) => [fd.path, fd]));
+
   // ── Generate AI review comments ─────────────────────────────────────────────
   let comments: PullRequestComment[];
   try {
@@ -189,6 +234,22 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
     const message = err instanceof Error ? err.message : 'Unknown AI error';
     console.error('[ai/review-pr] Gemini pipeline error:', message);
     res.status(502).json({ error: `AI review failed: ${message}` });
+    return;
+  }
+
+  // ── Validate AI comments against parsed diff ─────────────────────────────────
+  const { validComments, skippedComments } = validateAiComments(comments, fileDiffMap);
+
+  if (validComments.length === 0) {
+    const reasons = skippedComments.map((s) => `${s.path}:${s.line} - ${s.reason}`);
+    console.warn(`[ai/review-pr] No valid comments to post. All ${skippedComments.length} AI comments were skipped.`);
+    res.status(200).json({
+      success: false,
+      posted: 0,
+      skipped: skippedComments.length,
+      reasons,
+      message: 'No comments could be mapped to the PR diff. Nothing posted to GitHub.',
+    });
     return;
   }
 
@@ -208,7 +269,8 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
         body: JSON.stringify({
           body: 'CodePulse AI Automated Review',
           event: 'COMMENT',
-          comments: comments.map(({ path, line, body }) => ({ path, line, body })),
+          commit_id: commitId,
+          comments: validComments,
         }),
       },
     );
@@ -220,7 +282,7 @@ router.post('/review-pr', async (req: Request, res: Response): Promise<void> => 
       return;
     }
 
-    res.status(201).json({ success: true, commentCount: comments.length });
+    res.status(201).json({ success: true, commentCount: validComments.length, skipped: skippedComments.length });
   } catch (err) {
     console.error('[ai/review-pr] GitHub review request error:', err);
     res.status(502).json({ error: 'Failed to reach GitHub to post the review.' });

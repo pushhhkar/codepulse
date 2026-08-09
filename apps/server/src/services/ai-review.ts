@@ -176,7 +176,7 @@ const prReviewModel = genAI.getGenerativeModel({
     'practices introduced in the added/changed lines only. ' +
     'Return ONLY a raw JSON array — no markdown, no code fences, no prose. ' +
     'Each element must strictly match: ' +
-    '{ "path": "string (file path relative to the repo root, from the diff header)", ' +
+    '{ "path": "string (file path relative to repo root, MUST exactly match the path after \'+++ b/\' in the diff header, e.g. \'src/main.cpp\', NOT \'main.cpp\')", ' +
     '"line": number (the line number in the NEW version of the file where the issue applies), ' +
     '"body": "string (a concise, markdown-formatted review comment)", ' +
     '"priority": "string (one of: CRITICAL, IMPORTANT, MODERATE, MINOR)" }. ' +
