@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { ReviewSeverity } from '@codepulse/types';
 import { env } from '../config/env.js';
+import { detectLanguageFromPath, getLanguageDisplayName, type SupportedLanguage } from '../utils/language.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -172,8 +173,12 @@ const prReviewModel = genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
   systemInstruction:
     'You are a senior software engineer performing an automated pull request review. ' +
-    'You are given a unified git diff. Identify bugs, security vulnerabilities, and bad ' +
-    'practices introduced in the added/changed lines only. ' +
+    'You are given a unified git diff that may contain changes in multiple programming languages. ' +
+    'Detected languages per file are provided in the user message. ' +
+    'Identify bugs, security vulnerabilities, and bad practices introduced in the added/changed lines only. ' +
+    'Review each file according to its language-specific idioms and best practices. ' +
+    'Do not report valid language-specific syntax as an error. ' +
+    'Consider bugs, security, performance, correctness, maintainability, and readability. ' +
     'Return ONLY a raw JSON array — no markdown, no code fences, no prose. ' +
     'Each element must strictly match: ' +
     '{ "path": "string (file path relative to repo root, MUST exactly match the path after \'+++ b/\' in the diff header, e.g. \'src/main.cpp\', NOT \'main.cpp\')", ' +
@@ -257,8 +262,42 @@ function parsePrComments(raw: string): PullRequestComment[] {
   return comments;
 }
 
+function extractFilePathsFromDiff(diff: string): string[] {
+  const paths: string[] = [];
+  const lines = diff.split('\n');
+  for (const line of lines) {
+    const match = line.match(/^\+\+\+\s+b\/(.+)$/);
+    if (match && match[1]) {
+      paths.push(match[1]);
+    }
+  }
+  return paths;
+}
+
+function buildLanguageContext(paths: string[]): string {
+  const languageMap = new Map<string, SupportedLanguage>();
+  for (const path of paths) {
+    const lang = detectLanguageFromPath(path);
+    if (lang) {
+      languageMap.set(path, lang);
+    }
+  }
+
+  if (languageMap.size === 0) {
+    return '';
+  }
+
+  const entries = Array.from(languageMap.entries())
+    .map(([path, lang]) => `${path}: ${getLanguageDisplayName(lang as SupportedLanguage)}`)
+    .join(', ');
+  return `\n\nDetected languages per file:\n${entries}`;
+}
+
 export async function requestPrReview(diff: string): Promise<PullRequestComment[]> {
-  const userMessage = `Review the following unified git diff:\n\n\`\`\`diff\n${diff}\n\`\`\``;
+  const paths = extractFilePathsFromDiff(diff);
+  const languageContext = buildLanguageContext(paths);
+
+  const userMessage = `Review the following unified git diff:${languageContext}\n\n\`\`\`diff\n${diff}\n\`\`\``;
 
   const result = await prReviewModel.generateContent(userMessage);
   const content = result.response.text();
