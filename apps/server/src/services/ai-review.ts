@@ -148,7 +148,20 @@ export function markerSeverityToReviewSeverity(severity: MarkerSeverity): Review
 export async function requestAiReview(request: ReviewRequest): Promise<AiReviewResult> {
   const userMessage = `Language hint: ${request.language}\n\n\`\`\`\n${request.code}\n\`\`\``;
 
-  const result = await model.generateContent(userMessage);
+  let result;
+  try {
+    result = await model.generateContent(userMessage);
+  } catch (err: unknown) {
+    const error = err as { response?: { status?: number; statusText?: string; data?: unknown }; message?: string };
+    console.error('[ai-review] Gemini API error:', {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+    });
+    throw err;
+  }
+
   const content = result.response.text();
 
   if (!content) {
@@ -299,7 +312,20 @@ export async function requestPrReview(diff: string): Promise<PullRequestComment[
 
   const userMessage = `Review the following unified git diff:${languageContext}\n\n\`\`\`diff\n${diff}\n\`\`\``;
 
-  const result = await prReviewModel.generateContent(userMessage);
+  let result;
+  try {
+    result = await prReviewModel.generateContent(userMessage);
+  } catch (err: unknown) {
+    const error = err as { response?: { status?: number; statusText?: string; data?: unknown }; message?: string };
+    console.error('[ai-review] Gemini API error:', {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+    });
+    throw err;
+  }
+
   const content = result.response.text();
 
   if (!content) {

@@ -11,6 +11,8 @@ import {
   type ValidatedComment,
 } from '../utils/diff-validation.js';
 
+export { GITHUB_API, githubHeaders };
+
 const router = Router();
 
 const GITHUB_API = 'https://api.github.com';
@@ -320,11 +322,12 @@ async function runReviewInBackground(
       if (importantCount) parts.push(`${importantCount} Important`);
       if (moderateCount) parts.push(`${moderateCount} Moderate`);
       if (minorCount) parts.push(`${minorCount} Minor`);
-      summary = `CodePulse found ${comments.length} suggestion${comments.length === 1 ? '' : 's'} (${parts.join(', ')}).`;
+      summary = `CodePulse found ${validComments.length} suggestion${validComments.length === 1 ? '' : 's'} (${parts.join(', ')}).`;
       if (skippedComments.length > 0) {
         summary += ` ${skippedComments.length} skipped.`;
       }
     }
+    
 
     await patchCheckRun(token, owner, repo, checkRunId, {
       status: 'completed',
@@ -379,15 +382,21 @@ router.post('/github', async (req: Request, res: Response): Promise<void> => {
   const event = req.header('x-github-event');
   const payload = asRecord(req.body) ?? {};
 
-  // Handle check_run.requested_action for re-review
+  // Handle check_run.requested_action for re-review (custom button) AND check_run.rerequested (GitHub native "Re-run")
   if (event === 'check_run') {
     const action = payload['action'];
     if (action === 'requested_action') {
       const requestedAction = asRecord(payload['requested_action']);
       if (requestedAction?.['identifier'] === REREVIEW_ACTION_ID) {
+        console.info('[webhook/github] Received check_run.requested_action for rereview');
         await handleRereview(payload, res);
         return;
       }
+    }
+    if (action === 'rerequested') {
+      console.info('[webhook/github] Received check_run.rerequested (GitHub native Re-run)');
+      await handleRereview(payload, res);
+      return;
     }
     // Ack other check_run events
     res.status(204).end();
