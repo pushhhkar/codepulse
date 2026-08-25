@@ -1,6 +1,6 @@
 import type { User } from '@codepulse/types';
 
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:5000';
+const APP_URL = process.env['NEXT_PUBLIC_APP_URL'] ?? 'http://localhost:3000';
 
 export async function getServerUser(): Promise<User | null> {
   try {
@@ -10,7 +10,7 @@ export async function getServerUser(): Promise<User | null> {
 
     if (!token) return null;
 
-    const res = await fetch(`${API_URL}/auth/me`, {
+    const res = await fetch(new URL('/auth/me', APP_URL).toString(), {
       headers: { Cookie: `token=${token}` },
       cache: 'no-store',
     });

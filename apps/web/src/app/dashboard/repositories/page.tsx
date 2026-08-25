@@ -6,7 +6,7 @@ export const metadata: Metadata = {
   title: 'Repositories',
 };
 
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:5000';
+const APP_URL = process.env['NEXT_PUBLIC_APP_URL'] ?? 'http://localhost:3000';
 
 interface InstallationRepo {
   id: number;
@@ -25,7 +25,7 @@ async function fetchRepositories(): Promise<InstallationRepo[]> {
     const token = cookieStore.get('token')?.value;
     if (!token) return [];
 
-    const res = await fetch(`${API_URL}/api/github/repositories`, {
+    const res = await fetch(new URL('/api/github/repositories', APP_URL).toString(), {
       headers: { Cookie: `token=${token}` },
       cache: 'no-store',
     });

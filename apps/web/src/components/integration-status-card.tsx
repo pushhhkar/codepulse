@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers';
 
 const APP_NAME = process.env['NEXT_PUBLIC_GITHUB_APP_NAME'];
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:5000';
+const APP_URL = process.env['NEXT_PUBLIC_APP_URL'] ?? 'http://localhost:3000';
 
 interface InstallationStatus {
   installed: boolean;
@@ -16,7 +16,7 @@ async function fetchInstallationStatus(): Promise<InstallationStatus | null> {
     const token = cookieStore.get('token')?.value;
     if (!token) return null;
 
-    const res = await fetch(`${API_URL}/api/github/installation`, {
+    const res = await fetch(new URL('/api/github/installation', APP_URL).toString(), {
       headers: { Cookie: `token=${token}` },
       cache: 'no-store',
     });

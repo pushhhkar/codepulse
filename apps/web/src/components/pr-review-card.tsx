@@ -2,8 +2,6 @@
 
 import { useState, type FormEvent } from 'react';
 
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:5000';
-
 type ReviewStatus = 'idle' | 'success' | 'error';
 
 interface PrReviewSuccess {
@@ -32,7 +30,7 @@ export default function PrReviewCard() {
     setMessage('');
 
     try {
-      const res = await fetch(`${API_URL}/api/ai/review-pr`, {
+      const res = await fetch('/api/ai/review-pr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

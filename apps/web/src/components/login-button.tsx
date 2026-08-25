@@ -1,11 +1,9 @@
 'use client';
 
-const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:5000';
-
 export default function LoginButton() {
   function handleLogin() {
-    // Navigates the browser to the backend OAuth flow — no token ever touches the frontend
-    window.location.href = `${API_URL}/auth/github`;
+    // Keep the OAuth flow on the Vercel origin so the resulting session cookie is set here.
+    window.location.href = '/auth/github';
   }
 
   return (
