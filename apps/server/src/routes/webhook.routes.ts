@@ -273,7 +273,7 @@ async function runReviewInBackground(
           {
             label: REREVIEW_ACTION_LABEL,
             identifier: REREVIEW_ACTION_ID,
-            description: 'Trigger a fresh CodePulse AI review of this PR',
+            description: REREVIEW_ACTION_DESC,
           },
         ],
       });
